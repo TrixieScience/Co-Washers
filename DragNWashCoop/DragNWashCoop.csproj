@@ -6,8 +6,8 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
-    <!-- keeps the build folder's path (and the builder's username) out of the DLL -->
-    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <!-- keeps the checkout's path (and the builder's username) out of the DLL and its debug file -->
+    <DeterministicSourcePaths>true</DeterministicSourcePaths>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <!-- the game's default Steam folder; pass -p:GameDir=... if yours is somewhere else -->
     <GameDir Condition="'$(GameDir)' == '' And '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\Drag%27n Wash</GameDir>
