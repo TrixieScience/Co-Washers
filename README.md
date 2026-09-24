@@ -82,6 +82,7 @@ bothers you.
 ## Credits
 
 - Name by Cinderace.
+- Playtesting by cinderaceisgoated.
 - The kobold is from [KoboldKare](https://github.com/naelstrof/KoboldKare) by naelstrof, released as CC0.
 - The menu font is [Chewy](https://fonts.google.com/specimen/Chewy) by Sideshow, under the Apache License 2.0.
 
