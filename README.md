@@ -12,8 +12,8 @@ drop into a wash that's already going.
 
 Drag'n Wash is an adult game, and this mod is for adults too.
 
-> **Status:** beta. It's been played on Linux. Windows should work the same way, but nobody has tried it yet.
-> If you do, please say how it went.
+> **Status:** beta. It's been played on Linux. The Windows version loads it fine and can host a lobby (checked
+> through Proton), but nobody has played on actual Windows yet. If you do, please say how it went.
 
 ## What you need
 
@@ -71,7 +71,8 @@ Once everyone's ready, pick the save you want to play.
 - **"Game build or co-op mod version differs from host"** or **"The host did not answer":** someone has a
   different game update or a different Co-Washers release. Update everyone to the latest.
 - **No Multiplayer button:** BepInEx isn't loading. Check that `BepInEx/LogOutput.log` exists in the game folder.
-  On Linux, check the launch option.
+  On Windows, antivirus sometimes deletes BepInEx's `winhttp.dll`, so make sure it's still next to
+  `DragNWash.exe`. On Linux, check the launch option.
 - **Continue and Load Game are missing:** Steam isn't running. The game can't find its saves without it.
 
 Found a bug? [Open an issue](../../issues) and attach `BepInEx/LogOutput.log` from both the host and the guest,

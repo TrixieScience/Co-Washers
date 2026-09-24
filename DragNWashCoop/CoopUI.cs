@@ -228,7 +228,7 @@ internal sealed class CoopUI : IDisposable
         bool host = session.Role == CoopRole.Host, started = owner.World.Started;
         string scene = SceneManager.GetActiveScene().name;
         var players = Roster();
-        string where = session.IsLocal ? $"Local test on port {session.LocalPort}" : "Private Steam lobby";
+        string where = session.IsLocal ? $"Local test on port {session.LocalPort}" : "Friends-only Steam lobby";
         Header("LOBBY", $"{where}  ·  {Math.Min(players.Count, SteamSession.Capacity)}/{SteamSession.Capacity} players", session.Status,
                art: "title_lobby", letters: 160f);
         for (int i = 0; i < SteamSession.Capacity; i++)
