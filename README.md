@@ -29,7 +29,7 @@ Drag'n Wash is an adult game, and this mod is for adults too.
 1. Download `BepInEx_win_x64_5.4.x.zip` and unzip it into the game folder, next to `DragNWash.exe`.
    (In Steam: right-click Drag'n Wash → Manage → Browse local files.)
 2. Start the game once and quit, so BepInEx can set itself up.
-3. Download the latest Co-Washers zip from [Releases](../../releases) and unzip it into the game folder too.
+3. Download the latest Co-Washers zip from [Releases](https://github.com/TrixieScience/Co-Washers/releases) and unzip it into the game folder too.
    It only contains a `BepInEx` folder, which goes on top of the one that's already there.
 
 ### Linux (the native build)
@@ -75,7 +75,7 @@ Once everyone's ready, pick the save you want to play.
   `DragNWash.exe`. On Linux, check the launch option.
 - **Continue and Load Game are missing:** Steam isn't running. The game can't find its saves without it.
 
-Found a bug? [Open an issue](../../issues) and attach `BepInEx/LogOutput.log` from both the host and the guest,
+Found a bug? [Open an issue](https://github.com/TrixieScience/Co-Washers/issues) and attach `BepInEx/LogOutput.log` from both the host and the guest,
 plus what you were doing when it went wrong. The logs contain Steam names, so check them before posting if that
 bothers you.
 
