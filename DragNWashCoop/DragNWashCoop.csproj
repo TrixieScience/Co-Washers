@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>DragNWashCoop</AssemblyName>
+    <RootNamespace>DragNWashCoop</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- keeps the build folder's path (and the builder's username) out of the DLL -->
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- the game's default Steam folder; pass -p:GameDir=... if yours is somewhere else -->
+    <GameDir Condition="'$(GameDir)' == '' And '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\Drag%27n Wash</GameDir>
+    <GameDir Condition="'$(GameDir)' == ''">$(HOME)/.local/share/Steam/steamapps/common/Drag%27n Wash</GameDir>
+    <Managed>$(GameDir)/DragNWash_Data/Managed</Managed>
+    <!-- the BepInEx installed in the game folder -->
+    <BepInExDir Condition="'$(BepInExDir)' == ''">$(GameDir)/BepInEx</BepInExDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="BepInEx"><HintPath>$(BepInExDir)/core/BepInEx.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="0Harmony"><HintPath>$(BepInExDir)/core/0Harmony.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Assembly-CSharp"><HintPath>$(Managed)/Assembly-CSharp.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Steamworks.NET"><HintPath>$(Managed)/com.rlabrecque.steamworks.net.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine"><HintPath>$(Managed)/UnityEngine.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.CoreModule"><HintPath>$(Managed)/UnityEngine.CoreModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.ScreenCaptureModule"><HintPath>$(Managed)/UnityEngine.ScreenCaptureModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UI"><HintPath>$(Managed)/UnityEngine.UI.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UIModule"><HintPath>$(Managed)/UnityEngine.UIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextCoreFontEngineModule"><HintPath>$(Managed)/UnityEngine.TextCoreFontEngineModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AudioModule"><HintPath>$(Managed)/UnityEngine.AudioModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.VFXModule"><HintPath>$(Managed)/UnityEngine.VFXModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="com.gator-dragon-games.physics-audio"><HintPath>$(Managed)/com.gator-dragon-games.physics-audio.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.TextMeshPro"><HintPath>$(Managed)/Unity.TextMeshPro.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.IMGUIModule"><HintPath>$(Managed)/UnityEngine.IMGUIModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.InputLegacyModule"><HintPath>$(Managed)/UnityEngine.InputLegacyModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.PhysicsModule"><HintPath>$(Managed)/UnityEngine.PhysicsModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.TextRenderingModule"><HintPath>$(Managed)/UnityEngine.TextRenderingModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AnimationModule"><HintPath>$(Managed)/UnityEngine.AnimationModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.SceneManagementModule"><HintPath>$(Managed)/UnityEngine.SceneManagementModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.ImageConversionModule"><HintPath>$(Managed)/UnityEngine.ImageConversionModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.Collections"><HintPath>$(Managed)/Unity.Collections.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.UnityWebRequestModule"><HintPath>$(Managed)/UnityEngine.UnityWebRequestModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="UnityEngine.AssetBundleModule"><HintPath>$(Managed)/UnityEngine.AssetBundleModule.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Unity.InputSystem"><HintPath>$(Managed)/Unity.InputSystem.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="SkinnedMeshDecals"><HintPath>$(Managed)/com.naelstrof.skinnedmeshdecals.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="DynamicPenetrationForGames"><HintPath>$(Managed)/NaelstrofRaliv.DynamicPenetrationForGames.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="FluidRenderingForGames"><HintPath>$(Managed)/com.naelstrof-raliv.fluid-rendering-for-games.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="YarnSpinner.Unity"><HintPath>$(Managed)/YarnSpinner.Unity.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="YarnSpinner"><HintPath>$(Managed)/YarnSpinner.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/multiplayer.png" LogicalName="DragNWashCoop.Assets.multiplayer.png" />
+    <EmbeddedResource Include="Assets/multiplayer_hover.png" LogicalName="DragNWashCoop.Assets.multiplayer_hover.png" />
+    <EmbeddedResource Include="Assets/Chewy-Regular.ttf" LogicalName="DragNWashCoop.Assets.Chewy-Regular.ttf" />
+    <EmbeddedResource Include="Assets/host.png" LogicalName="DragNWashCoop.Assets.host.png" />
+    <EmbeddedResource Include="Assets/host_hover.png" LogicalName="DragNWashCoop.Assets.host_hover.png" />
+    <EmbeddedResource Include="Assets/join.png" LogicalName="DragNWashCoop.Assets.join.png" />
+    <EmbeddedResource Include="Assets/join_hover.png" LogicalName="DragNWashCoop.Assets.join_hover.png" />
+    <EmbeddedResource Include="Assets/title_multiplayer.png" LogicalName="DragNWashCoop.Assets.title_multiplayer.png" />
+    <EmbeddedResource Include="Assets/title_lobby.png" LogicalName="DragNWashCoop.Assets.title_lobby.png" />
+    <EmbeddedResource Include="Assets/slot_card.png" LogicalName="DragNWashCoop.Assets.slot_card.png" />
+    <EmbeddedResource Include="Assets/slot_card_edge.png" LogicalName="DragNWashCoop.Assets.slot_card_edge.png" />
+    <!-- the co-op player avatar: KoboldKare's kobold (CC0, naelstrof), made by avatar/export_avatar.py -->
+    <EmbeddedResource Include="Assets/kobold_avatar.bin" LogicalName="DragNWashCoop.kobold_avatar.bin" />
+  </ItemGroup>
+</Project>

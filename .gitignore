@@ -1,0 +1,13 @@
+# build output (the DLL and release zips are made from the sources here)
+bin/
+obj/
+DragNWashCoop/build/
+DragNWashCoop/artifacts/
+__pycache__/
+*.blend1
+
+# KoboldKare's animation clips come from Mixamo and are not CC0; only the model and textures are used
+koboldkare/Assets/KoboldKare/Animations/
+
+# written by avatar/export_avatar.py; the DLL embeds the copy in DragNWashCoop/Assets/
+avatar/kobold_avatar.bin

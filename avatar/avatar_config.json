@@ -1,0 +1,23 @@
+{
+  "source": "../koboldkare/kobold_import.blend",
+  "armature": "Armature",
+  "meshes": ["Body"],
+  "scale": 1.0,
+  "texture_size": 1024,
+  "bake_shapes": {"FlatChestLeftRight": 1.0},
+  "shapes": ["BlinkLeftRight", "HappyLeftRight", "SquintLeftRight", "SurprisedLeftRight", "vrc.v_aa", "vrc.v_oh"],
+  "metrics": {"eye_height": 1.689, "hip_height": 0.925, "leg_length": 0.841, "arm_length": 0.562},
+  "roles": {
+    "hips": "Hips", "spine": "Spine", "chest": "Chest", "neck": "Neck", "head": "Head", "jaw": "Jaw",
+    "eyeL": "Eye.L", "eyeR": "Eye.R", "earL": "Ear.L", "earR": "Ear.R",
+    "shoulderL": "Shoulder.L", "upperArmL": "Arm.L", "lowerArmL": "ForeArm.L", "handL": "Hand.L",
+    "shoulderR": "Shoulder.R", "upperArmR": "Arm.R", "lowerArmR": "ForeArm.R", "handR": "Hand.R",
+    "upperLegL": "UpLeg.L", "lowerLegL": "Leg.L", "footL": "Foot.L",
+    "upperLegR": "UpLeg.R", "lowerLegR": "Leg.R", "footR": "Foot.R",
+    "tail0": "Tail", "tail1": "Tail.1", "tail2": "Tail.2", "tail3": "Tail.3", "tail4": "Tail.4"
+  },
+  "materials": {
+    "KoboldBody": {"texture": "kobold_body.png", "color": [1, 1, 1, 1], "smoothness": 0.35},
+    "KoboldEyes": {"texture": "kobold_eye.png", "color": [1, 1, 1, 1], "smoothness": 0.8}
+  }
+}
