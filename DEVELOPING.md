@@ -82,6 +82,24 @@ Steam path.
   - `-coop-avatar-trace <file.csv>`: records 30 s of the other player's kobold, every frame (feet, hips, head, and
     the snapshot buffer).
 
+- For the network and Ryan:
+  - `-coop-dev-loss <fraction>` and `-coop-dev-jitter <seconds>`: this copy drops that share of its unreliable packets
+    (poses) and delays the rest by up to that long, like a poor internet connection.
+  - `-coop-dragon-trace <file.csv>`: records Ryan as this copy draws him, every frame for 30 s.
+  - `-coop-dragon-shot <dir>`: photographs Ryan from the front and the side, 6 s and 12 s after he appears (with
+    `-coop-shot-quit`, quits after).
+
+### Linux and Windows on one PC
+
+The local test also works between the native Linux game and the Windows build running under Proton, since both are the
+same Steam build. Download the Windows build with Steam's console (`download_depot 4739660 4739661`), put BepInEx 5
+for Windows and the plugin in it, add a `steam_appid.txt` containing `4739660`, and start it with:
+
+```sh
+STEAM_COMPAT_CLIENT_INSTALL_PATH=~/.local/share/Steam STEAM_COMPAT_DATA_PATH=<a prefix folder> SteamAppId=4739660 \
+WINEDLLOVERRIDES="winhttp=n,b" "<Proton 10.0>/proton" run DragNWash.exe -coop-local-join
+```
+
 ![The Multiplayer page with the local test buttons](docs/multiplayer.jpg)
 
 ## The kobold

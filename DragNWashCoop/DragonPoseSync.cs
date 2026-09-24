@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -44,9 +45,12 @@ internal sealed class DragonPoseSync
 
     private readonly CoopPlugin owner;
     private readonly CoopWorld world;
-    private Pose? previous;
-    private Pose? current;
-    private float receivedAt;
+    // poses as they arrive, stamped with the host's clock: Ryan is drawn a moment in the past, between the two around
+    // that moment, so a lost or late pose (they're sent unreliably over the internet) doesn't make him freeze and jump
+    private readonly List<(double At, Pose Pose)> poses = new();
+    private double offset = double.NaN, offsetAge;   // our clock - the host's (the fastest trip seen)
+    private const double Delay = .18;                // a few poses of slack: a lost pose or two plus the internet's jitter
+    private Pose? current;                           // the newest pose
     private string dropped = string.Empty;   // why the last pose was not used, logged once per reason
     private float nextSend;
     private SkinnedMeshRenderer? bonesOf;
@@ -54,7 +58,7 @@ internal sealed class DragonPoseSync
     internal bool HasPose => current != null;
     internal DragonPoseSync(CoopPlugin owner, CoopWorld world) { this.owner = owner; this.world = world; }
 
-    internal void Clear() { previous = null; current = null; nextSend = 0; bonesOf = null; }
+    internal void Clear() { poses.Clear(); offset = double.NaN; current = null; nextSend = 0; bonesOf = null; }
 
     /// <summary>skin.bones allocates a new array on every call.</summary>
     private Transform[] BonesOf(SkinnedMeshRenderer skin)
@@ -72,7 +76,7 @@ internal sealed class DragonPoseSync
     {
         if (world.IsHost && Time.unscaledTime >= nextSend)
         {
-            nextSend = Time.unscaledTime + 1f / 15f;
+            nextSend = Time.unscaledTime + 1f / 20f;
             Send();
         }
         if (world.IsGuest && current != null) Apply();
@@ -84,23 +88,28 @@ internal sealed class DragonPoseSync
         var bones = BonesOf(dragon.skin);
         if (bones.Length > 1200) return;
         int shapes = Math.Min(dragon.skin.sharedMesh?.blendShapeCount ?? 0, 256);
-        if (15 + 4 + 28 + 29 + 2 + bones.Length * 28 + 2 + shapes * 4 > Envelope.MaxPacketBytes) return;
+        if (15 + 12 + 28 + 29 + 2 + bones.Length * 14 + 2 + shapes > Envelope.MaxPacketBytes) return;
         var body = dragon.animator != null ? dragon.animator.transform : null;
+        double sentAt = Time.realtimeSinceStartupAsDouble;
         owner.Session.Broadcast(PacketKind.DragonPose, world.Epoch, w =>
         {
             w.Write(world.CurrentLevel);
+            w.Write(sentAt);
             w.Write(dragon.gameObject.transform.position);
             w.Write(dragon.gameObject.transform.rotation);
             w.Write(body != null);
             if (body != null) { w.Write(body.position); w.Write(body.rotation); }
+            // bones packed small: positions as half floats, rotations as 16-bit parts (14 bytes a bone instead of 28)
             w.Write((ushort)bones.Length);
             foreach (var bone in bones)
             {
-                w.Write(bone != null ? bone.localPosition : Vector3.zero);
-                w.Write(bone != null ? bone.localRotation : Quaternion.identity);
+                var p = bone != null ? bone.localPosition : Vector3.zero;
+                var q = bone != null ? bone.localRotation : Quaternion.identity;
+                w.Write(Mathf.FloatToHalf(p.x)); w.Write(Mathf.FloatToHalf(p.y)); w.Write(Mathf.FloatToHalf(p.z));
+                w.Write(Pack(q.x)); w.Write(Pack(q.y)); w.Write(Pack(q.z)); w.Write(Pack(q.w));
             }
-            w.Write((ushort)shapes);
-            for (int i = 0; i < shapes; i++) w.Write(dragon.skin.GetBlendShapeWeight(i));
+            w.Write((ushort)shapes);   // blend shape weights (0..100) as a byte each
+            for (int i = 0; i < shapes; i++) w.Write((byte)Mathf.Clamp(Mathf.RoundToInt(dragon.skin.GetBlendShapeWeight(i) * 2.55f), 0, 255));
         }, false);
     }
 
@@ -109,6 +118,7 @@ internal sealed class DragonPoseSync
         if (!world.IsGuest) return;
         int level = reader.ReadInt32();
         if (level != world.CurrentLevel) { Dropped($"the host is on level {level}, this copy on {world.CurrentLevel}"); return; }
+        double sentAt = reader.ReadDouble();
         var pose = new Pose { Root = reader.ReadVector3(), RootRotation = reader.ReadQuaternion() };
         pose.HasBody = reader.ReadBoolean();
         if (pose.HasBody)
@@ -122,16 +132,55 @@ internal sealed class DragonPoseSync
         pose.Rotations = new Quaternion[boneCount];
         for (int i = 0; i < boneCount; i++)
         {
-            pose.Positions[i] = reader.ReadVector3();
-            pose.Rotations[i] = reader.ReadQuaternion();
+            pose.Positions[i] = new Vector3(Mathf.HalfToFloat(reader.ReadUInt16()), Mathf.HalfToFloat(reader.ReadUInt16()), Mathf.HalfToFloat(reader.ReadUInt16()));
+            var q = new Quaternion(Unpack(reader.ReadInt16()), Unpack(reader.ReadInt16()), Unpack(reader.ReadInt16()), Unpack(reader.ReadInt16()));
+            pose.Rotations[i] = q.normalized;
         }
         int shapeCount = reader.ReadUInt16();
         if (shapeCount > 256) throw new InvalidDataException("Dragon pose has too many shapes");
         pose.Shapes = new float[shapeCount];
-        for (int i = 0; i < shapeCount; i++) pose.Shapes[i] = reader.ReadSingle();
-        previous = current ?? pose;
+        for (int i = 0; i < shapeCount; i++) pose.Shapes[i] = reader.ReadByte() / 2.55f;
+        double now = Time.realtimeSinceStartupAsDouble;
+        if (poses.Count > 0 && sentAt <= poses[poses.Count - 1].At) return;   // late or repeated
+        double seen = now - sentAt;
+        // the smallest offset seen is the least-delayed pose; let it drift up slowly so a changed route is followed
+        if (double.IsNaN(offset) || seen < offset) offset = seen;
+        else offset += Math.Min(seen - offset, (now - offsetAge) * .02);
+        offsetAge = now;
+        poses.Add((sentAt, pose));
+        if (poses.Count > 16) poses.RemoveAt(0);
         current = pose;
-        receivedAt = Time.realtimeSinceStartup;
+    }
+
+    private static short Pack(float part) => (short)Mathf.Clamp(Mathf.RoundToInt(part * 32767f), -32767, 32767);
+    private static float Unpack(short part) => part / 32767f;
+
+    /// <summary>The two poses around a moment a little in the past, and how far between them it is.</summary>
+    private bool Sample(out Pose a, out Pose b, out float u)
+    {
+        a = b = null!; u = 0f;
+        if (poses.Count == 0) return false;
+        double t = Time.realtimeSinceStartupAsDouble - offset - Delay;
+        if (t <= poses[0].At) { a = b = poses[0].Pose; return true; }
+        for (int i = 1; i < poses.Count; i++)
+            if (t < poses[i].At)
+            {
+                a = poses[i - 1].Pose; b = poses[i].Pose;
+                u = (float)((t - poses[i - 1].At) / Math.Max(poses[i].At - poses[i - 1].At, 1e-4));
+                return true;
+            }
+        // no newer pose yet: carry on the last motion for a moment (freezing, then jumping, is what shows), then hold
+        if (poses.Count >= 2)
+        {
+            var (at0, p0) = poses[poses.Count - 2];
+            var (at1, p1) = poses[poses.Count - 1];
+            double span = Math.Max(at1 - at0, 1e-4);
+            a = p0; b = p1;
+            u = 1f + (float)(Math.Min(t - at1, .12) / span);
+            return true;
+        }
+        a = b = poses[poses.Count - 1].Pose;
+        return true;
     }
 
     private void Apply()
@@ -143,22 +192,22 @@ internal sealed class DragonPoseSync
             Dropped($"the host's Ryan has {current.Positions.Length} bones, this copy's {bones.Length}");
             return;
         }
-        var a = previous ?? current;
-        float t = Mathf.Clamp01((Time.realtimeSinceStartup - receivedAt) * 15f);
-        dragon.gameObject.transform.position = Vector3.Lerp(a.Root, current.Root, t);
-        dragon.gameObject.transform.rotation = Quaternion.Slerp(a.RootRotation, current.RootRotation, t);
-        if (dragon.animator != null && a.HasBody && current.HasBody)
-            dragon.animator.transform.SetPositionAndRotation(Vector3.Lerp(a.Body, current.Body, t),
-                Quaternion.Slerp(a.BodyRotation, current.BodyRotation, t));
+        if (!Sample(out var a, out var b, out float t)) return;   // b: the later of the two poses around the moment drawn
+        if (a.Positions.Length != bones.Length || b.Positions.Length != bones.Length) return;
+        dragon.gameObject.transform.position = Vector3.LerpUnclamped(a.Root, b.Root, t);
+        dragon.gameObject.transform.rotation = Quaternion.SlerpUnclamped(a.RootRotation, b.RootRotation, t);
+        if (dragon.animator != null && a.HasBody && b.HasBody)
+            dragon.animator.transform.SetPositionAndRotation(Vector3.LerpUnclamped(a.Body, b.Body, t),
+                Quaternion.SlerpUnclamped(a.BodyRotation, b.BodyRotation, t));
         for (int i = 0; i < bones.Length; i++)
         {
             if (bones[i] == null) continue;
-            bones[i].localPosition = Vector3.Lerp(a.Positions[i], current.Positions[i], t);
-            bones[i].localRotation = Quaternion.Slerp(a.Rotations[i], current.Rotations[i], t);
+            bones[i].localPosition = Vector3.LerpUnclamped(a.Positions[i], b.Positions[i], t);
+            bones[i].localRotation = Quaternion.SlerpUnclamped(a.Rotations[i], b.Rotations[i], t);
         }
-        int shapes = Math.Min(dragon.skin.sharedMesh?.blendShapeCount ?? 0, current.Shapes.Length);
+        int shapes = Math.Min(dragon.skin.sharedMesh?.blendShapeCount ?? 0, b.Shapes.Length);
         for (int i = 0; i < shapes; i++)
-            dragon.skin.SetBlendShapeWeight(i, Mathf.Lerp(a.Shapes[i], current.Shapes[i], t));
+            dragon.skin.SetBlendShapeWeight(i, Mathf.LerpUnclamped(a.Shapes[i], b.Shapes[i], t));
     }
 
     internal void Dropped(string why)

@@ -48,6 +48,7 @@ internal sealed class MaskSync
         internal int Width, Height;
         internal TextureFormat Format;
         internal byte[] Compressed = Array.Empty<byte>();
+        internal bool Applied;
         internal int Received;
     }
 
@@ -432,6 +433,12 @@ internal sealed class MaskSync
         if (bytes.Length != count) throw new EndOfStreamException();
         Buffer.BlockCopy(bytes, 0, blob.Compressed, offset, count);
         blob.Received += count;
+        // a whole channel goes on at once: one missing or out-of-step piece elsewhere can't cost the ones that arrived
+        if (blob.Received == blob.Compressed.Length && !blob.Applied && WalkNWashSceneState.TryGetActiveDragon(out var dragon))
+        {
+            try { ApplyChannel(dragon, channel, blob); }
+            catch (Exception e) { owner.Log.LogWarning($"Bad mask {Channels[channel]}: {e.Message}"); }
+        }
     }
 
     internal void FinishSnapshot(BinaryReader reader)
@@ -447,43 +454,18 @@ internal sealed class MaskSync
     private void CompleteSnapshot(uint transfer, int expected, uint seq)
     {
         if (!WalkNWashSceneState.TryGetActiveDragon(out var dragon)) return;
-        if (transfer != receivingId || incoming.Count != expected) { RetrySnapshot(); return; }
+        if (transfer != receivingId || incoming.Count != expected)
+        {
+            owner.Log.LogWarning($"Mask snapshot {transfer} didn't match: receiving {receivingId}, {incoming.Count} of {expected} channels");
+            RetrySnapshot();
+            return;
+        }
         try
         {
             foreach (var entry in incoming)
             {
-                var blob = entry.Value;
-                if (blob.Received != blob.Compressed.Length) throw new InvalidDataException("Incomplete mask");
-                int bytesPerPixel = blob.Format == TextureFormat.R16 ? 2 : 4;
-                int expectedRaw = checked(blob.Width * blob.Height * bytesPerPixel);
-                using var input = new DeflateStream(new MemoryStream(blob.Compressed), CompressionMode.Decompress);
-                using var rawStream = new MemoryStream(expectedRaw);
-                var buffer = new byte[8192];
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
-                {
-                    if (rawStream.Length + read > expectedRaw) throw new InvalidDataException("Mask decompressed too large");
-                    rawStream.Write(buffer, 0, read);
-                }
-                var raw = rawStream.ToArray();
-                if (raw.Length != expectedRaw) throw new InvalidDataException("Mask size mismatch");
-                var upload = new Texture2D(blob.Width, blob.Height, blob.Format, false, true);
-                upload.LoadRawTextureData(raw); upload.Apply(false, false);
-                var rtFormat = blob.Format == TextureFormat.R16 ? RenderTextureFormat.R16 :
-                               blob.Format == TextureFormat.RFloat ? RenderTextureFormat.RFloat : RenderTextureFormat.ARGB32;
-                var texture = new RenderTexture(blob.Width, blob.Height, 0, rtFormat)
-                { useMipMap = true, autoGenerateMips = false };
-                texture.Create();
-                var active = RenderTexture.active;   // Blit leaves its target active
-                Graphics.Blit(upload, texture);
-                RenderTexture.active = active;
-                texture.GenerateMips();
-                UnityEngine.Object.Destroy(upload);
-                string name = Channels[entry.Key];
-                // hand the new texture over before freeing the previous one the decal system was using
-                PaintDecal.OverrideDecalTexture(dragon.skin, texture, Shader.PropertyToID(name), DilationType.Additive);
-                if (receivedTextures.TryGetValue(name, out var old) && old != null) UnityEngine.Object.Destroy(old);
-                receivedTextures[name] = texture;
+                if (entry.Value.Received != entry.Value.Compressed.Length) throw new InvalidDataException($"{Channels[entry.Key]} incomplete");
+                if (!entry.Value.Applied) ApplyChannel(dragon, entry.Key, entry.Value);
             }
         }
         catch (Exception e) { owner.Log.LogWarning($"Bad mask snapshot: {e.Message}"); RetrySnapshot(); return; }
@@ -497,6 +479,82 @@ internal sealed class MaskSync
                 foreach (var bytes in batch.Stamps) toPaint.Enqueue((bytes, false));
         world.SnapshotApplied();
         owner.Log.LogInfo($"Applied co-op mask snapshot {transfer} ({expected} channels)");
+    }
+
+    /// <summary>Decode one channel of a snapshot and hand it to the decal system as that channel's texture.</summary>
+    private void ApplyChannel(WalkNWashSceneState.DragonDescription dragon, int channel, Incoming blob)
+    {
+        blob.Applied = true;
+        int bytesPerPixel = blob.Format == TextureFormat.R16 ? 2 : 4;
+        int expectedRaw = checked(blob.Width * blob.Height * bytesPerPixel);
+        using var input = new DeflateStream(new MemoryStream(blob.Compressed), CompressionMode.Decompress);
+        using var rawStream = new MemoryStream(expectedRaw);
+        var buffer = new byte[8192];
+        int read;
+        while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (rawStream.Length + read > expectedRaw) throw new InvalidDataException("Mask decompressed too large");
+            rawStream.Write(buffer, 0, read);
+        }
+        var raw = rawStream.ToArray();
+        if (raw.Length != expectedRaw) throw new InvalidDataException("Mask size mismatch");
+        var upload = new Texture2D(blob.Width, blob.Height, blob.Format, false, true);
+        upload.LoadRawTextureData(raw); upload.Apply(false, false);
+        var rtFormat = blob.Format == TextureFormat.R16 ? RenderTextureFormat.R16 :
+                       blob.Format == TextureFormat.RFloat ? RenderTextureFormat.RFloat : RenderTextureFormat.ARGB32;
+        var texture = new RenderTexture(blob.Width, blob.Height, 0, rtFormat)
+        { useMipMap = true, autoGenerateMips = false };
+        texture.Create();
+        var active = RenderTexture.active;   // Blit leaves its target active
+        Graphics.Blit(upload, texture);
+        RenderTexture.active = active;
+        texture.GenerateMips();
+        UnityEngine.Object.Destroy(upload);
+        string name = Channels[channel];
+        // hand the new texture over before freeing the previous one the decal system was using
+        PaintDecal.OverrideDecalTexture(dragon.skin, texture, Shader.PropertyToID(name), DilationType.Additive);
+        if (receivedTextures.TryGetValue(name, out var old) && old != null) UnityEngine.Object.Destroy(old);
+        receivedTextures[name] = texture;
+        Diagnose(name, blob, raw, texture);
+    }
+
+    private readonly HashSet<string> diagnosed = new();
+
+    /// <summary>
+    /// Once per channel: the mask's values as the host sent them and as this graphics card holds them after upload,
+    /// at full size and at a smaller mip level (which is what shows from a distance). A card or driver that stores
+    /// them wrongly shows up here as values that don't match.
+    /// </summary>
+    private void Diagnose(string name, Incoming blob, byte[] raw, RenderTexture texture)
+    {
+        if (!diagnosed.Add(name)) return;
+        float sent = MeanRed(raw, blob.Format);
+        string made = $"{texture.format}/{texture.graphicsFormat}, sRGB {texture.sRGB}, created {texture.IsCreated()}, mips {texture.mipmapCount}";
+        int small = Math.Min(3, texture.mipmapCount - 1);
+        void Read(int mip, Action<float> done)
+        {
+            try
+            {
+                AsyncGPUReadback.Request(texture, mip, TextureFormat.RGBA32, r =>
+                {
+                    try { done(r.hasError ? float.NaN : MeanRed(r.GetData<byte>().ToArray(), TextureFormat.RGBA32)); }
+                    catch { done(float.NaN); }
+                });
+            }
+            catch { done(float.NaN); }
+        }
+        Read(0, full => Read(small, far => owner.Log.LogInfo(
+            $"Mask {name} {blob.Width}x{blob.Height} {blob.Format}: host value {sent:0.000}, here {full:0.000} (mip {small}: {far:0.000}); texture {made}")));
+    }
+
+    private static float MeanRed(byte[] data, TextureFormat format)
+    {
+        double sum = 0; int n = 0;
+        int step = format == TextureFormat.R16 ? 2 : 4;
+        for (int i = 0; i + step <= data.Length; i += step * 17, n++)   // every 17th texel is plenty
+            sum += format == TextureFormat.R16 ? BitConverter.ToUInt16(data, i) / 65535.0
+                 : format == TextureFormat.RFloat ? BitConverter.ToSingle(data, i) : data[i] / 255.0;
+        return n > 0 ? (float)(sum / n) : float.NaN;
     }
 
     private void RetrySnapshot()

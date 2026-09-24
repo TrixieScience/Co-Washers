@@ -64,7 +64,8 @@ internal enum CoopRole : byte { None, Host, Guest }
 internal readonly struct Envelope
 {
     internal const uint Magic = 0x43574E44; // DNWC
-    internal const ushort Version = 6;   // 5: poses carry the sender's clock (avatar interpolation); 6: yips, colours
+    internal const ushort Version = 7;   // 5: poses carry the sender's clock (avatar interpolation); 6: yips, colours;
+                                         // 7: Ryan's pose is packed small and carries the host's clock
     internal const int MaxPacketBytes = 48 * 1024;
 
     internal readonly PacketKind Kind;

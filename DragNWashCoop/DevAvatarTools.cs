@@ -42,6 +42,14 @@ internal static class DevAvatarTools
         QuitAfter = Array.IndexOf(args, "-coop-shot-quit") >= 0;
         int k = Array.IndexOf(args, "-coop-avatar-trace");
         if (k >= 0 && k + 1 < args.Length) TracePath = args[k + 1];
+        float Arg(string name) { int a = Array.IndexOf(args, name); return a >= 0 && a + 1 < args.Length &&
+            float.TryParse(args[a + 1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f; }
+        Loss = Mathf.Clamp01(Arg("-coop-dev-loss"));
+        Jitter = Mathf.Clamp(Arg("-coop-dev-jitter"), 0f, 1f);
+        int dt = Array.IndexOf(args, "-coop-dragon-trace");
+        if (dt >= 0 && dt + 1 < args.Length) DragonTracePath = args[dt + 1];
+        int d = Array.IndexOf(args, "-coop-dragon-shot");
+        if (d >= 0 && d + 1 < args.Length) DragonShotDir = args[d + 1];
         int j = Array.IndexOf(args, "-coop-dev-tool");
         if (j >= 0 && j + 1 < args.Length) ToolName = args[j + 1];
     }
@@ -185,6 +193,90 @@ internal static class DevAvatarTools
                         string.Format(inv, "{0:F3},{1:F4},", a.BodyYaw, buf.LastMargin) + V(a.AnkleTargetL) + "," + V(a.AnkleTargetR) + "," +
                         V(a.KneeL.position) + "," + V(a.KneeR.position) + "," + V(a.HandR.position) + "," + V(a.RightTarget) + "," +
                         string.Format(inv, "{0:F2},{1:F2},{2:F3},{3}", a.FootYawL, a.FootYawR, a.Gait, a.HoldingTool ? 1 : 0));
+    }
+
+    // -coop-dev-loss F / -coop-dev-jitter S: this copy's unreliable packets (poses) are dropped with chance F and delayed by
+    // up to S seconds, as over a poor internet connection
+    internal static float Loss, Jitter;
+    private static readonly System.Random chaos = new();
+    internal static bool DropPose() => Loss > 0f && chaos.NextDouble() < Loss;
+    internal static float PoseDelay() => Jitter > 0f ? (float)chaos.NextDouble() * Jitter : 0f;
+
+    // -coop-dragon-trace CSV: Ryan as this copy draws him, every frame for 30 s (root, a bone mid-body)
+    internal static string DragonTracePath = string.Empty;
+    private static StreamWriter? dragonTrace;
+    private static float dragonTraceStart;
+
+    internal static void TickDragonTrace()
+    {
+        if (DragonTracePath.Length == 0 || UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "PlayGame" ||
+            !WalkNWashSceneState.TryGetActiveDragon(out var dragon) || dragon.skin == null) return;
+        if (dragonTrace == null)
+        {
+            dragonTrace = new StreamWriter(DragonTracePath);
+            dragonTraceStart = Time.unscaledTime;
+            dragonTrace.WriteLine("t,dt,rx,ry,rz,bx,by,bz");
+        }
+        float t = Time.unscaledTime - dragonTraceStart;
+        if (t > 30f) { dragonTrace.Close(); dragonTrace = null; DragonTracePath = string.Empty; return; }
+        var bones = dragon.skin.bones;
+        var bone = bones.Length > 0 ? bones[bones.Length / 2] : dragon.skin.transform;
+        var r = dragon.gameObject.transform.position; var b = bone != null ? bone.position : r;
+        var inv = System.Globalization.CultureInfo.InvariantCulture;
+        dragonTrace.WriteLine(string.Format(inv, "{0:F4},{1:F5},{2:F4},{3:F4},{4:F4},{5:F4},{6:F4},{7:F4}", t, Time.unscaledDeltaTime, r.x, r.y, r.z, b.x, b.y, b.z));
+        dragonTrace.Flush();
+    }
+
+    // -coop-dragon-shot DIR: photograph Ryan as this copy draws him (paint, pose), front and side, 6 s and 12 s after he appears
+    internal static string DragonShotDir = string.Empty;
+    private static float dragonSeen = -1f;
+    private static int dragonShot;
+    private static readonly (float at, string view)[] DragonSchedule = { (6f, "front"), (6.4f, "side"), (12f, "front"), (12.4f, "side") };
+
+    internal static void TickDragonShots(BepInEx.Logging.ManualLogSource log)
+    {
+        if (DragonShotDir.Length == 0 || dragonShot >= DragonSchedule.Length) return;
+        if (UnityEngine.SceneManagement.SceneManager.GetActiveScene().name != "PlayGame" ||
+            !WalkNWashSceneState.TryGetActiveDragon(out var dragon) || dragon.skin == null) return;
+        if (dragonSeen < 0f) { dragonSeen = Time.unscaledTime; Directory.CreateDirectory(DragonShotDir); log.LogInfo("Dragon shots: Ryan seen"); }
+        var (at, view) = DragonSchedule[dragonShot];
+        if (Time.unscaledTime - dragonSeen < at) return;
+        dragonShot++;
+        var bounds = dragon.skin.bounds;
+        var t = dragon.gameObject.transform;
+        float size = bounds.extents.magnitude;
+        Vector3 from = bounds.center + (view == "side" ? t.right : t.forward) * (size * 2f) + Vector3.up * (size * .25f);
+        string path = Path.Combine(DragonShotDir, $"dragon_{dragonShot:00}_{view}.png");
+        try { Photo(from, bounds.center, path); log.LogInfo($"Dragon shot {Path.GetFileName(path)}"); }
+        catch (Exception e) { log.LogWarning($"Dragon shot failed: {e}"); }
+        if (dragonShot >= DragonSchedule.Length && QuitAfter && ShotDir.Length == 0) Application.Quit();
+    }
+
+    /// <summary>Render the scene from a separate camera to a PNG.</summary>
+    private static void Photo(Vector3 from, Vector3 target, string path)
+    {
+        var main = Camera.main;
+        var go = new GameObject("DevPhotoCamera");
+        var cam = go.AddComponent<Camera>();
+        if (main != null) cam.CopyFrom(main);
+        cam.fieldOfView = 45f;
+        cam.nearClipPlane = .05f;
+        go.transform.position = from;
+        go.transform.rotation = Quaternion.LookRotation(target - from, Vector3.up);
+        var rt = new RenderTexture(1280, 720, 24, RenderTextureFormat.ARGB32);
+        cam.targetTexture = rt;
+        cam.Render();
+        var prev = RenderTexture.active;
+        RenderTexture.active = rt;
+        var tex = new Texture2D(1280, 720, TextureFormat.RGB24, false);
+        tex.ReadPixels(new Rect(0, 0, 1280, 720), 0, 0);
+        tex.Apply();
+        RenderTexture.active = prev;
+        File.WriteAllBytes(path, tex.EncodeToPNG());
+        cam.targetTexture = null;
+        UnityEngine.Object.Destroy(rt);
+        UnityEngine.Object.Destroy(tex);
+        UnityEngine.Object.Destroy(go);
     }
 
     private static float firstSeen = -1f;

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.5.3
+
+- **Ryan moves smoothly for guests.** The host sent his whole skeleton as one big packet that Steam had to split
+  into pieces, and losing any piece lost the whole pose, so he froze and jumped. His pose is now half the size, sent
+  20 times a second, and drawn a moment in the past between the poses around it, the way other players are.
+  Tested with a fifth of the packets lost and the rest delayed: he freezes in 0.1% of frames (5.4% before).
+- **Joining retries by itself.** Steam sometimes needs longer than its default 10 seconds to find a route between
+  two players, and the join then failed. It now gets 30 seconds, and a join that still times out tries again, up to
+  three times.
+- **Paint arrives one layer at a time.** Each of Ryan's dirt and soap layers goes on as soon as it arrives, so one
+  out-of-step piece can't throw away the rest ("Could not synchronize dragon paint masks").
+- **More to go on for the white Ryan some Windows players see.** Each paint layer a guest receives is logged with
+  its values as the host sent them and as the guest's graphics card holds them.
+- Changes the network protocol (version 7): everyone needs 0.5.3.
+
 ## 0.5.2
 
 - **Joining over Steam is sturdier.** A host used to turn a friend away if their connection arrived before Steam

@@ -61,12 +61,14 @@ internal sealed class SteamSession : IDisposable
     private TcpListener? localListener;
     private uint nextLocalHandle;
     private readonly List<byte[]> localPackets = new();
+    private readonly List<(float At, Peer Peer, byte[] Data)> delayed = new();   // -coop-dev-jitter
     private bool pendingCreate;                    // a lobby we asked for; late ones are left at once
     private CSteamID pendingJoin = CSteamID.Nil;   // the lobby we asked to join
     private float handshakeDeadline;
     private bool relayStarted;
     private ESteamNetworkingConnectionState hostState;   // guest: how far the connection to the host got
     private float nextHello;                             // guest: the hello is sent again until the host answers
+    private int connectAttempts;                         // guest: tries at reaching the host this join
     private const int BulkPendingBudget = 256 * 1024;
 
     internal CoopRole Role { get; private set; }
@@ -134,6 +136,13 @@ internal sealed class SteamSession : IDisposable
         }
         if (Role == CoopRole.None) return;
         AcceptLocal();
+        for (int i = delayed.Count - 1; i >= 0; i--)   // -coop-dev-jitter: late packets go out, in whatever order
+            if (Time.realtimeSinceStartup >= delayed[i].At)
+            {
+                var (_, peer, data) = delayed[i];
+                delayed.RemoveAt(i);
+                if (peers.ContainsKey(peer.Connection)) peer.Local?.Send(data, droppable: true);
+            }
         foreach (var peer in peers.Values.ToArray())
             if (peer.Connection != HSteamNetConnection.Invalid)
                 PollPeer(peer);
@@ -365,6 +374,9 @@ internal sealed class SteamSession : IDisposable
         catch (Exception e) { owner.Log.LogError($"Could not encode co-op packet: {e}"); return; }
         if (peer.Local != null)
         {
+            if (!reliable && DevAvatarTools.DropPose()) return;   // -coop-dev-loss / -jitter: a poor connection, for testing
+            float delay = reliable ? 0f : DevAvatarTools.PoseDelay();
+            if (delay > 0f) { delayed.Add((Time.realtimeSinceStartup + delay, peer, data)); return; }
             peer.Local.Send(data, droppable: !reliable);   // local test: in order; stale poses dropped when backed up
             return;
         }
@@ -419,6 +431,8 @@ internal sealed class SteamSession : IDisposable
         SetGlobalInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendBufferSize, 4 * 1024 * 1024);
         SetGlobalInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMin, 256 * 1024);
         SetGlobalInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_SendRateMax, 4 * 1024 * 1024);
+        // finding a route through Steam's relays can take longer than the default 10 s (a first test timed out at it)
+        SetGlobalInt(ESteamNetworkingConfigValue.k_ESteamNetworkingConfig_TimeoutInitial, 30000);
     }
 
     private static void SetGlobalInt(ESteamNetworkingConfigValue key, int value)
@@ -510,21 +524,25 @@ internal sealed class SteamSession : IDisposable
         }
         hostId = SteamMatchmaking.GetLobbyOwner(lobby);
         owner.Log.LogInfo($"In {NameOf((ulong)hostId)}'s lobby ({SteamMatchmaking.GetNumLobbyMembers(lobby)} members); connecting. {RelayStatus()}");
+        connectAttempts = 0;
+        if (!ConnectToHost()) { Leave(); Status = "Could not connect to host"; return; }
+        Role = CoopRole.Guest;
+        Status = "Connecting to host";
+        LobbyChanged?.Invoke();
+    }
+
+    /// <summary>Guest: open (or reopen) the Steam connection to the lobby's host.</summary>
+    private bool ConnectToHost()
+    {
+        connectAttempts++;
         hostState = ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_None;
         var identity = new SteamNetworkingIdentity();
         identity.SetSteamID(hostId);
         hostConnection = SteamNetworkingSockets.ConnectP2P(ref identity, VirtualPort, 0, null);
-        if (hostConnection == HSteamNetConnection.Invalid)
-        {
-            Leave();
-            Status = "Could not connect to host";
-            return;
-        }
-        Role = CoopRole.Guest;
+        if (hostConnection == HSteamNetConnection.Invalid) return false;
         peers[hostConnection] = new Peer { SteamId = hostId, Connection = hostConnection };
-        handshakeDeadline = Time.realtimeSinceStartup + 30f;   // Steam relays can take a while to connect
-        Status = "Connecting to host";
-        LobbyChanged?.Invoke();
+        handshakeDeadline = Time.realtimeSinceStartup + 45f;   // Steam's own attempt gives up after 30 s
+        return true;
     }
 
     private void OnConnectionStatus(SteamNetConnectionStatusChangedCallback_t change)
@@ -565,7 +583,18 @@ internal sealed class SteamSession : IDisposable
         {
             // read what the host sent before closing (a Reject says why) before this frame's poll would
             if (Role == CoopRole.Guest && change.m_hConn == hostConnection && peers.TryGetValue(hostConnection, out var host))
+            {
                 PollPeer(host);
+                // Steam couldn't find a route in time (end reason 5003): try again a couple of times before giving up
+                if (Role == CoopRole.Guest && !host.Authenticated && host.Local == null && change.m_info.m_eEndReason == 5003 &&
+                    connectAttempts < 3 && peers.ContainsKey(change.m_hConn))
+                {
+                    owner.Log.LogInfo($"Connection attempt {connectAttempts} timed out; trying again. {RelayStatus()}");
+                    SteamNetworkingSockets.CloseConnection(change.m_hConn, 0, "Retrying", false);
+                    peers.Remove(change.m_hConn);
+                    if (ConnectToHost()) { Status = $"Connecting to host (try {connectAttempts})"; return; }
+                }
+            }
             SteamNetworkingSockets.CloseConnection(change.m_hConn, 0, "Connection closed", false);
             OnLinkClosed(change.m_hConn, change.m_info.m_szEndDebug);
         }
@@ -603,7 +632,9 @@ internal sealed class SteamSession : IDisposable
     }
 
     // A local test uses a made-up player ID and a build ID from this install; Steam uses the real ones.
-    private int HandshakeBuild => IsLocal ? StableHash(Application.buildGUID) : GameBuild;
+    // A local test between the Linux and the Windows build (under Proton) is the same Steam build of the game, but not the
+    // same Unity build, so it compares Steam's build when there is one
+    private int HandshakeBuild => IsLocal ? (GameBuild > 0 ? GameBuild : StableHash(Application.buildGUID)) : GameBuild;
 
     private void SendHello(Peer host) => Send(host, PacketKind.Hello, 0, w =>
     {

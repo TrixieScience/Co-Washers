@@ -9,7 +9,7 @@ using UnityEngine.SceneManagement;
 
 namespace DragNWashCoop;
 
-[BepInPlugin(Guid, "Co-Washers", "0.5.2")]
+[BepInPlugin(Guid, "Co-Washers", "0.5.3")]
 public sealed class CoopPlugin : BaseUnityPlugin
 {
     public const string Guid = "trixiescience.dragnwashcoop";
@@ -88,7 +88,7 @@ public sealed class CoopPlugin : BaseUnityPlugin
         TickAutoLocal();
         TickMenuShot();
         World.Tick();
-        if (LocalTest) { DevAvatarTools.TickShots(World.Actors, Log); DevAvatarTools.TickTrace(World.Actors); DevAvatarTools.TickTool(); if (DevAvatarTools.YipNow()) World.Yip(); }
+        if (LocalTest) { DevAvatarTools.TickShots(World.Actors, Log); DevAvatarTools.TickTrace(World.Actors); DevAvatarTools.TickTool(); DevAvatarTools.TickDragonShots(Log); DevAvatarTools.TickDragonTrace(); if (DevAvatarTools.YipNow()) World.Yip(); }
         TickAvatarPrewarm();
         if (Keyboard.current?.f7Key.wasPressedThisFrame == true) Ui.Toggle();
         Ui.Tick();
