@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2
+
+- **Joining over Steam is sturdier.** A host used to turn a friend away if their connection arrived before Steam
+  had told the host they were in the lobby. Now the host waits for its lobby list to catch up, and the joining game
+  says hello again every couple of seconds until the host answers.
+- **The host can't start while someone is still joining.** Friends who are in the Steam lobby but not connected yet
+  show up as "Joining...". Before, they didn't show up at all, and the host could start without them.
+- **When joining fails, the menu says why.** For example "Couldn't reach the host through Steam", or which version
+  is different. Every step of connecting is also written to `BepInEx/LogOutput.log`, so a failed join can be
+  tracked down.
+- Everyone in a session needs 0.5.2.
+
 ## 0.5.1
 
 - **Friends' legs keep up with them.** Players move at up to 5 m/s and start and stop almost instantly, and the

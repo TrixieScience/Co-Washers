@@ -96,7 +96,8 @@ internal sealed class CoopWorld
     {
         if (owner.Session.Role != CoopRole.Host || slot < 1 || slot > 3 ||
             SceneManager.GetActiveScene().name != "StartScene") return;
-        if (owner.Session.Peers.Any(p => p.Authenticated && !p.Ready)) return;
+        if (owner.Session.Peers.Any(p => !p.Authenticated || !p.Ready)) return;   // everyone joined and ready
+        owner.Log.LogInfo($"Starting the campaign from slot {slot} with {owner.Session.Peers.Count} guest(s)");
         SaveManagerV1.SetSaveSlot(slot);
         started = true;
         epoch++;
@@ -600,6 +601,7 @@ internal sealed class CoopWorld
         started = true;
         epoch = packet.SceneEpoch;
         desiredScene = packet.Reader.ReadShortString();
+        owner.Log.LogInfo($"The host moved everyone to {desiredScene}");
         // outside PlayGame the host sends no save; keep the last one so this copy never loads its own
         var sceneSave = packet.Reader.ReadLongString();
         if (sceneSave.Length > 0) remoteSaveJson = sceneSave;

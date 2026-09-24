@@ -23,6 +23,7 @@ internal sealed class Peer
     internal bool Ready;
     internal uint LastPoseSequence;
     internal float LastHeard;
+    internal float Since = Time.realtimeSinceStartup;   // when the connection arrived
 }
 
 /// <summary>
@@ -64,10 +65,18 @@ internal sealed class SteamSession : IDisposable
     private CSteamID pendingJoin = CSteamID.Nil;   // the lobby we asked to join
     private float handshakeDeadline;
     private bool relayStarted;
+    private ESteamNetworkingConnectionState hostState;   // guest: how far the connection to the host got
+    private float nextHello;                             // guest: the hello is sent again until the host answers
     private const int BulkPendingBudget = 256 * 1024;
 
     internal CoopRole Role { get; private set; }
-    internal string Status { get; private set; } = "Steam is starting";
+    private string status = "Steam is starting";
+    /// <summary>What the co-op menu shows; every change is logged too, so a failed session can be followed.</summary>
+    internal string Status
+    {
+        get => status;
+        private set { if (value == status) return; status = value; owner.Log.LogInfo($"Co-op: {value}"); }
+    }
     internal bool IsReady => callbacksReady;
     internal bool IsPlaying => Role != CoopRole.None && peers.Values.Any(p => p.Authenticated);
     internal bool IsLocal { get; private set; }
@@ -130,20 +139,41 @@ internal sealed class SteamSession : IDisposable
                 PollPeer(peer);
         foreach (var peer in peers.Values)
             if (peer.Bulk.Count > 0) FlushBulk(peer);
-        // a host that never answers (e.g. a different co-op version, whose packets are dropped unread)
-        if (Role == CoopRole.Guest && peers.TryGetValue(hostConnection, out var hostPeer) && !hostPeer.Authenticated &&
-            Time.realtimeSinceStartup >= handshakeDeadline)
+        if (Role == CoopRole.Guest && peers.TryGetValue(hostConnection, out var hostPeer) && !hostPeer.Authenticated)
         {
-            Leave();
-            Status = "The host did not answer. Is it running the same co-op version?";
-            return;
+            // a host that never answers (e.g. a different co-op version, whose packets are dropped unread)
+            if (Time.realtimeSinceStartup >= handshakeDeadline)
+            {
+                var reached = hostState;
+                owner.Log.LogWarning($"Gave up joining: the connection to the host got as far as {Short(reached)}; {RelayStatus()}");
+                Leave();
+                Status = reached == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected || hostPeer.Local != null
+                    ? "The host did not answer. Is it running the same Co-Washers version?"
+                    : $"Couldn't reach the host through Steam (got as far as: {Short(reached)}). Check both of you are online in Steam.";
+                return;
+            }
+            if (hostPeer.Local == null && hostState == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected &&
+                Time.realtimeSinceStartup >= nextHello)
+            {
+                nextHello = Time.realtimeSinceStartup + 2f;
+                SendHello(hostPeer);
+            }
         }
         if (Time.realtimeSinceStartup >= nextHeartbeat)
         {
             nextHeartbeat = Time.realtimeSinceStartup + 2f;
             foreach (var peer in peers.Values.ToArray())
             {
-                if (!peer.Authenticated) continue;
+                if (!peer.Authenticated)
+                {
+                    if (Role == CoopRole.Host && Time.realtimeSinceStartup - peer.Since > 30f)
+                    {
+                        owner.Log.LogWarning($"{NameOf((ulong)peer.SteamId)} connected but never finished joining; dropping them");
+                        CloseLink(peer, "Did not finish joining");
+                        RemovePeer(peer);
+                    }
+                    continue;
+                }
                 if (Time.realtimeSinceStartup - peer.LastHeard > 20f)
                 {
                     owner.Log.LogWarning($"{NameOf((ulong)peer.SteamId)} timed out");
@@ -432,6 +462,7 @@ internal sealed class SteamSession : IDisposable
         }
         // Steam shows Join Game on this player in friends' lists, and hands the joiner this string
         presenceSet = SteamFriends.SetRichPresence("connect", $"+connect_lobby {lobby.m_SteamID}");
+        owner.Log.LogInfo($"Hosting Steam lobby {lobby.m_SteamID} (game build {GameBuild}, mod {modFingerprint}). {RelayStatus()}");
         Status = "Lobby ready. Invite friends.";
         LobbyChanged?.Invoke();
     }
@@ -470,12 +501,16 @@ internal sealed class SteamSession : IDisposable
         awaitingLobbyMetadata = false;
         if (protocol != Envelope.Version.ToString() || build != GameBuild.ToString() || mod != modFingerprint)
         {
+            owner.Log.LogWarning($"The host's lobby says protocol {protocol}, game build {build}, mod {mod}; " +
+                                 $"this copy has {Envelope.Version}, {GameBuild}, {modFingerprint}");
             Status = "Game build or co-op mod version differs from host";
             SteamMatchmaking.LeaveLobby(lobby);
             lobby = CSteamID.Nil;
             return;
         }
         hostId = SteamMatchmaking.GetLobbyOwner(lobby);
+        owner.Log.LogInfo($"In {NameOf((ulong)hostId)}'s lobby ({SteamMatchmaking.GetNumLobbyMembers(lobby)} members); connecting. {RelayStatus()}");
+        hostState = ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_None;
         var identity = new SteamNetworkingIdentity();
         identity.SetSteamID(hostId);
         hostConnection = SteamNetworkingSockets.ConnectP2P(ref identity, VirtualPort, 0, null);
@@ -495,21 +530,24 @@ internal sealed class SteamSession : IDisposable
     private void OnConnectionStatus(SteamNetConnectionStatusChangedCallback_t change)
     {
         var state = change.m_info.m_eState;
+        var id = change.m_info.m_identityRemote.GetSteamID();
+        owner.Log.LogInfo($"Steam connection with {NameOf((ulong)id)}: {Short(change.m_eOldState)} -> {Short(state)}" +
+                          (change.m_info.m_eEndReason != 0 ? $" (end reason {change.m_info.m_eEndReason}: {change.m_info.m_szEndDebug})" : ""));
+        if (Role == CoopRole.Guest && change.m_hConn == hostConnection) hostState = state;
         if (state == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connecting)
         {
             if (Role != CoopRole.Host || change.m_info.m_hListenSocket != listenSocket) return;
-            var id = change.m_info.m_identityRemote.GetSteamID();
-            if (!IsLobbyMember(id) || removedFromLobby.Contains((ulong)id) || peers.Count >= Capacity - 1)
+            // lobby membership is checked at the hello instead: this copy's list of lobby members can still be
+            // catching up when the guest's connection arrives
+            string? refuse = removedFromLobby.Contains((ulong)id) ? "Removed by host" : peers.Count >= Capacity - 1 ? "The game is full" : null;
+            if (refuse == null && SteamNetworkingSockets.AcceptConnection(change.m_hConn) != EResult.k_EResultOK) refuse = "Accept failed";
+            if (refuse != null)
             {
-                SteamNetworkingSockets.CloseConnection(change.m_hConn, 0, "Not invited or lobby full", false);
+                owner.Log.LogInfo($"Refused a connection from {NameOf((ulong)id)}: {refuse}");
+                SteamNetworkingSockets.CloseConnection(change.m_hConn, 0, refuse, false);
                 return;
             }
-            if (SteamNetworkingSockets.AcceptConnection(change.m_hConn) != EResult.k_EResultOK)
-            {
-                SteamNetworkingSockets.CloseConnection(change.m_hConn, 0, "Accept failed", false);
-                return;
-            }
-            peers[change.m_hConn] = new Peer { SteamId = id, Connection = change.m_hConn };
+            peers[change.m_hConn] = new Peer { SteamId = id, Connection = change.m_hConn, LastHeard = Time.realtimeSinceStartup };
             return;
         }
         if (state == ESteamNetworkingConnectionState.k_ESteamNetworkingConnectionState_Connected)
@@ -518,6 +556,7 @@ internal sealed class SteamSession : IDisposable
             {
                 Status = "Checking host version";
                 SendHello(host);
+                nextHello = Time.realtimeSinceStartup + 2f;
             }
             return;
         }
@@ -531,6 +570,21 @@ internal sealed class SteamSession : IDisposable
             OnLinkClosed(change.m_hConn, change.m_info.m_szEndDebug);
         }
     }
+
+    /// <summary>Steam's relay network, as the log needs it when a connection can't be made.</summary>
+    private static string RelayStatus()
+    {
+        try
+        {
+            var available = SteamNetworkingUtils.GetRelayNetworkStatus(out var details);
+            return $"Steam relays: {available.ToString().Replace("k_ESteamNetworkingAvailability_", "")}" +
+                   (string.IsNullOrEmpty(details.m_debugMsg) ? "" : $" ({details.m_debugMsg})");
+        }
+        catch (Exception e) { return $"Steam relays: unknown ({e.Message})"; }
+    }
+
+    private static string Short(ESteamNetworkingConnectionState state) =>
+        state.ToString().Replace("k_ESteamNetworkingConnectionState_", "");
 
     private void OnLinkClosed(HSteamNetConnection connection, string? reason = null)
     {
@@ -626,13 +680,24 @@ internal sealed class SteamSession : IDisposable
             string mod = message.Reader.ReadShortString();
             ulong claimedId = message.Reader.ReadUInt64();
             _ = message.Reader.ReadShortString();
+            if (peer.Local == null && claimedId == (ulong)peer.SteamId && !IsLobbyMember(peer.SteamId) &&
+                build == HandshakeBuild && mod == modFingerprint && !removedFromLobby.Contains(claimedId))
+            {
+                // Steam can deliver their connection before this copy's list of lobby members has them: they say
+                // hello again every 2 s, and one of those gets through once the list has caught up
+                owner.Log.LogInfo($"{NameOf(claimedId)} said hello before this copy saw them in the lobby; waiting for the next one");
+                return;
+            }
             bool identity = peer.Local != null
                 ? IsLocalTestId(claimedId) && claimedId != SelfId && !removedFromLobby.Contains(claimedId)
                 : claimedId == (ulong)peer.SteamId && IsLobbyMember(peer.SteamId);
             if (build != HandshakeBuild || mod != modFingerprint || !identity)
             {
-                owner.Log.LogWarning($"Rejected {NameOf(claimedId)}: game build, co-op DLL or identity differs");
-                Send(peer, PacketKind.Reject, 0, w => w.WriteShortString("Game build or Steam identity mismatch"));
+                string why = build != HandshakeBuild ? "Your game version is different from the host's (update the game)"
+                           : mod != modFingerprint ? "Your Co-Washers version is different from the host's"
+                           : "Steam identity mismatch";
+                owner.Log.LogWarning($"Rejected {NameOf(claimedId)}: {why} (their build {build}, mod {mod}; ours {HandshakeBuild}, {modFingerprint})");
+                Send(peer, PacketKind.Reject, 0, w => w.WriteShortString(why));
                 CloseLink(peer, "Handshake failed", linger: true);
                 RemovePeer(peer);
                 return;

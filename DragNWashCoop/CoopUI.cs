@@ -270,7 +270,7 @@ internal sealed class CoopUI : IDisposable
     /// <summary>Host, before the campaign: the three saves as stickers, coloured like the game's Slot 1-3 stickers.</summary>
     private void SaveCards(float top)
     {
-        bool waiting = owner.Session.Peers.Any(p => p.Authenticated && !p.Ready);   // what StartCampaign waits for
+        bool waiting = owner.Session.Peers.Any(p => !p.Authenticated || !p.Ready);   // what StartCampaign waits for
         var heading = Label(page!, "Pick a save to play", 40, LobbyLook.Yellow, TextAlignmentOptions.TopLeft, LobbyLook.LabelMaterial);
         Place(heading.rectTransform, Left + 4f, top, 600f, 52f);
         Caption(waiting ? "Waiting for everyone to ready up..." : "Guests' own saves stay untouched.",
@@ -346,6 +346,14 @@ internal sealed class CoopUI : IDisposable
                           : started ? PlayerState.Playing : peer.Ready ? PlayerState.Ready : PlayerState.NotReady;
                 players.Add(new Player(id, peer.Authenticated ? session.NameOf(id) : "Joining...", false, false, state, peer));
             }
+            // in the Steam lobby but not connected (yet): shown, so a friend whose connection is stuck isn't invisible
+            if (!session.IsLocal && session.IsReady && session.Lobby != CSteamID.Nil)
+                for (int i = 0; i < SteamMatchmaking.GetNumLobbyMembers(session.Lobby); i++)
+                {
+                    ulong member = (ulong)SteamMatchmaking.GetLobbyMemberByIndex(session.Lobby, i);
+                    if (member != session.SelfId && !session.Peers.Any(p => (ulong)p.SteamId == member))
+                        players.Add(new Player(member, session.NameOf(member), false, false, PlayerState.Joining, null));
+                }
             return players;
         }
         ulong hostId = (ulong)session.HostId;
