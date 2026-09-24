@@ -39,6 +39,14 @@ internal sealed class KoboldAvatar
     private float bodyYaw;
     private float yawVelocity;
     private float yawTarget;
+    private bool movingFast, movingForward = true;
+    private Vector3 plapperRest;       // their left hand's usual place in view (camera space), learnt slowly
+    private bool plapperSeen;
+    private float plapperReach;        // 0 hanging .. 1 reaching for their real left hand
+    private readonly Transform? middleR;
+    private readonly Vector3 fingerRestR;   // right hand: wrist to middle knuckle, in the rest pose
+    /// <summary>Where the held tool's grip sits this frame (the palm), and the side it's held from (their right).</summary>
+    internal Vector3 ToolPalm, ToolSide, ToolAim;
     private Motion.Spring hipSpring;   // smoothed bob/sway (x = sway, y = bob)
     private Vector3 lastGround;
     private Vector3 velocity;
@@ -65,6 +73,13 @@ internal sealed class KoboldAvatar
     internal bool SwingingR => stepR.Swinging;
     internal float BodyYaw => bodyYaw;
     internal Vector3 AnkleTargetL, AnkleTargetR;   // (developer trace)
+    internal Transform KneeL => shinL;
+    internal Transform KneeR => shinR;
+    internal Transform HandR => handR;
+    internal Vector3 RightTarget;                  // where the right hand was sent (developer trace)
+    internal float FootYawL => footYawL;
+    internal float FootYawR => footYawR;
+    internal bool HoldingTool;
     /// <summary>A foot came down this frame (for its footstep sound).</summary>
     internal bool LandedL, LandedR;
     /// <summary>0 standing .. 1 running.</summary>
@@ -111,6 +126,10 @@ internal sealed class KoboldAvatar
         tail = tailList.ToArray();
         CollectFingers(".L", fingersL);
         CollectFingers(".R", fingersR);
+        int middle = Array.IndexOf(data.BoneNames, "HandMiddle1.R");
+        middleR = middle >= 0 ? bones[middle] : null;
+        int hr = Array.IndexOf(bones, handR);
+        fingerRestR = middle >= 0 ? (restRootPos[middle] - restRootPos[hr]).normalized : restRootRot[hr] * Vector3.up;
 
         var go = new GameObject("Body");
         go.transform.SetParent(Root.transform, false);
@@ -266,7 +285,8 @@ internal sealed class KoboldAvatar
     }
 
     /// <summary>Pose the kobold for this frame.</summary>
-    internal void Drive(in PoseSnapshot p, float dt, bool holdingTool, bool usingTool)
+    /// <param name="toolReach">How far their tool's moving part is out from the tool (the sponge on a surface).</param>
+    internal void Drive(in PoseSnapshot p, float dt, bool holdingTool, bool usingTool, Vector3 toolReach = default)
     {
         LandedL = LandedR = false;
         if (dt <= 0f) return;
@@ -301,9 +321,19 @@ internal sealed class KoboldAvatar
         // ---------------------------------------------------------------- body turns toward where they look
         float camYaw = p.HeadRotation.eulerAngles.y;
         float diff = Mathf.DeltaAngle(bodyYaw, camYaw);
-        // walking: the body faces where they look; standing: it only turns once the head has turned far enough,
-        // then most of the way (a held target, so it doesn't start and stop at the threshold)
-        if (speed > .25f * scale) yawTarget = camYaw;
+        // moving quickly: the body faces the way it's going (or away from it, walking backwards), as the game turns the
+        // player's own feet, while the head keeps looking where the camera looks - so a strafe is a run, not a sidestep.
+        // Walking slowly it faces where they look; standing, it only turns once the head has turned far enough, then
+        // most of the way (a held target, so it doesn't start and stop at the threshold)
+        movingFast = speed > (movingFast ? .8f : 1.4f) * scale;
+        if (movingFast)
+        {
+            float moveYaw = Mathf.Atan2(velocity.x, velocity.z) * Mathf.Rad2Deg;
+            float fromLook = Mathf.Abs(Mathf.DeltaAngle(camYaw, moveYaw));
+            if (movingForward ? fromLook > 101f : fromLook < 79f) movingForward = !movingForward;
+            yawTarget = movingForward ? moveYaw : moveYaw + 180f;
+        }
+        else if (speed > .25f * scale) yawTarget = camYaw;
         else if (Mathf.Abs(Mathf.DeltaAngle(yawTarget, camYaw)) > 45f) yawTarget = camYaw - Mathf.Sign(diff) * 15f;
         // critically damped spring: turns start and stop softly
         const float yawK = 45f;
@@ -317,11 +347,17 @@ internal sealed class KoboldAvatar
 
         // ---------------------------------------------------------------- feet
         Vector3 fwd = rootRot * Vector3.forward, right = rootRot * Vector3.right;
-        float stepTime = Mathf.Lerp(.34f, .2f, gait);
-        // a foot swings for one step and stands for one (while the other swings): aiming 1.5 steps of travel ahead
-        // lands it half a step in front of the body and lifts it half a step behind - a symmetric stride that
-        // neither trails nor over-reaches
-        Vector3 lead = velocity * (stepTime * 1.5f);
+        // The stride fits the leg at any speed (players walk at up to 5 m/s). Each foot's cycle is a swing and a
+        // stance; during the stance the body passes over the planted foot, so the stance can only last as long as
+        // the leg reaches: the cycle shortens as they speed up. Running, the swing takes more of the cycle than the
+        // stance, so the next foot lifts before the other lands (a moment with both feet off the ground).
+        float run = Mathf.Clamp01((speed / scale - 1.2f) / 2.6f);           // 0 walking .. 1 running
+        float swingShare = Mathf.Lerp(.5f, .66f, run);
+        float stanceReach = legLen * Mathf.Lerp(.75f, .95f, run);           // how far the body can pass over a planted foot
+        float cycle = speed > .05f ? Mathf.Clamp(stanceReach / (speed * (1f - swingShare)), .3f, .8f) : .8f;
+        float stepTime = cycle * swingShare;
+        // aimed so it lands half a stance ahead of the hip: the body travels a swing's worth while it's in the air
+        Vector3 lead = velocity * (cycle * (1f + swingShare) * .5f);
         Vector3 homeL = root.TransformPoint(new Vector3(restRootPos[IndexOf(footL)].x, 0f, restRootPos[IndexOf(footL)].z));
         Vector3 homeR = root.TransformPoint(new Vector3(restRootPos[IndexOf(footR)].x, 0f, restRootPos[IndexOf(footR)].z));
         if (!feetPlaced) { feetPlaced = true; stepL.Reset(homeL); stepR.Reset(homeR); footYawL = footYawR = yawFromL = yawToL = yawFromR = yawToR = bodyYaw; }
@@ -342,13 +378,22 @@ internal sealed class KoboldAvatar
         // then it may lift once the other is past the middle of its swing, like a quick first stride
         bool overL = Vector3.ProjectOnPlane(stepL.Planted - homeL, Vector3.up).magnitude > legLen * .6f;
         bool overR = Vector3.ProjectOnPlane(stepR.Planted - homeR, Vector3.up).magnitude > legLen * .6f;
-        bool blockL = stepR.Swinging && !(overL && stepR.Progress > .5f);
-        bool blockR = stepL.Swinging && !(overR && stepL.Progress > .5f);
+        // walking, the other foot must be down first; running, it may still be in the air, past this much of its swing
+        float overlapAt = 1f / (2f * swingShare);
+        bool blockL = stepR.Swinging && stepR.Progress < overlapAt && !(overL && stepR.Progress > .5f);
+        bool blockR = stepL.Swinging && stepL.Progress < overlapAt && !(overR && stepL.Progress > .5f);
         if (errL >= errR) { startedL = stepL.TryStep(wantL, thresh, blockL, stepTime); if (!startedL) startedR = stepR.TryStep(wantR, thresh, blockR, stepTime); }
         else { startedR = stepR.TryStep(wantR, thresh, blockR, stepTime); if (!startedR) startedL = stepL.TryStep(wantL, thresh, blockL, stepTime); }
         if (startedL) { yawFromL = footYawL; yawToL = bodyYaw; }
         if (startedR) { yawFromR = footYawR; yawToR = bodyYaw; }
-        float lift = legLen * (.1f + .1f * gait);
+        // a foot in the air keeps aiming for where the hip will be when it lands (plus half a stance), and takes the
+        // time the current speed wants: the game starts and stops a player in a fraction of a step
+        float stanceTime = cycle - stepTime;
+        if (stepL.Swinging && !startedL) stepL.Retarget(Landing(stepL, homeL, stanceTime, ground, right, -1f, halfStance, stepR.Planted, legLen), stepTime);
+        if (stepR.Swinging && !startedR) stepR.Retarget(Landing(stepR, homeR, stanceTime, ground, right, +1f, halfStance, stepL.Planted, legLen), stepTime);
+        if (stepL.Swinging) yawToL = bodyYaw;
+        if (stepR.Swinging) yawToR = bodyYaw;
+        float lift = legLen * (.1f + .06f * gait + .08f * run);
         bool wasL = stepL.Swinging, wasR = stepR.Swinging;
         Vector3 fL = stepL.Tick(dt, lift, out float arcL);
         Vector3 fR = stepR.Tick(dt, lift, out float arcR);
@@ -363,7 +408,7 @@ internal sealed class KoboldAvatar
         breathPhase += dt * (1.6f + 2.5f * gait);
         float breath = Mathf.Sin(breathPhase);
         float bob = gait * (Mathf.Max(arcL, arcR) - .6f) * .045f;
-        float drop = crouch * data.HipHeight * .9f + (1f - gait) * 0f;
+        float drop = crouch * data.HipHeight * .9f + run * data.HipHeight * .06f;   // a running crouch: more reach
         var stance = arcL > arcR ? fR : fL;
         float sway = Mathf.Clamp(Vector3.Dot(stance - ground, right) / scale, -.08f, .08f) * .35f * (1f - crouch);
         hipSpring.Step(new Vector3(sway, bob, 0f), 120f, 2f * Mathf.Sqrt(120f), dt);   // no kinks between steps
@@ -373,8 +418,7 @@ internal sealed class KoboldAvatar
         if (holdingTool)
         {
             // reaching further than an arm (the sponge out on a surface): lean into it
-            Vector3 shoulder = ground + Vector3.up * (restRootPos[IndexOf(armR)].y * scale);
-            float excess = Vector3.Distance(shoulder, p.Tool) / (data.ArmLength * scale) - .9f;
+            float excess = (HoldReach(usingTool, gait) * data.ArmLength * scale + toolReach.magnitude) / (data.ArmLength * scale) - .9f;
             reachLean = Mathf.Lerp(reachLean, Mathf.Clamp01(excess) * 18f, Motion.Damp(6f, dt));
         }
         else reachLean = Mathf.Lerp(reachLean, 0f, Motion.Damp(6f, dt));
@@ -409,7 +453,10 @@ internal sealed class KoboldAvatar
         float lookYaw = Mathf.Clamp(Mathf.Atan2(lf.x, lf.z) * Mathf.Rad2Deg, -80f, 80f);
         float lookPitch = Mathf.Clamp(-Mathf.Asin(Mathf.Clamp(lf.y, -1f, 1f)) * Mathf.Rad2Deg, -55f, 60f);
         float counter = -swing * 6f * gait;                          // shoulders twist against the hips when walking
-        var chain = new (Transform bone, float share)[] { (spine, .12f), (chest, .3f), (neck, .6f), (head, 1f) };
+        // holding a tool, the chest turns further toward where they look, so the tool arm aims (the legs may be running
+        // another way)
+        float chestShare = holdingTool ? .55f : .3f;
+        var chain = new (Transform bone, float share)[] { (spine, holdingTool ? .22f : .12f), (chest, chestShare), (neck, holdingTool ? .75f : .6f), (head, 1f) };
         foreach (var (bone, share) in chain)
         {
             float twist = bone == chest ? counter : bone == spine ? counter * .5f : 0f;
@@ -420,27 +467,59 @@ internal sealed class KoboldAvatar
 
         // ---------------------------------------------------------------- legs
         Vector3 up = Vector3.up;
-        LegIK(legL, shinL, footL, fL, footYawL, stepL.Swinging ? stepL.Progress : 1f, fwd, up, lean);
-        LegIK(legR, shinR, footR, fR, footYawR, stepR.Swinging ? stepR.Progress : 1f, fwd, up, lean);
+        LegIK(legL, shinL, footL, fL, footYawL, stepL.Swinging ? stepL.Progress : 1f, fwd, up);
+        LegIK(legR, shinR, footR, fR, footYawR, stepR.Swinging ? stepR.Progress : 1f, fwd, up);
 
         // ---------------------------------------------------------------- arms
         Vector3 down = Vector3.down;
         float arm = data.ArmLength * scale;
-        // left: reaches for their real hand (the plapper), wherever it is - but never locks the elbow straight
-        Motion.TwoBone(armL, foreL, handL, Reach(armL.position, p.Hand, arm), armL.position + (-fwd * .6f + down * .5f - right * .6f) * arm);
-        // right: holds the tool if they have one, otherwise hangs and swings with the walk
-        Vector3 rightTarget;
-        if (holdingTool) rightTarget = p.Tool;
+        // left: hangs and swings with the walk, and reaches for their real hand (the plapper) when they use it. In view
+        // that hand floats at the edge of the screen, which on the kobold would be a hand held up all the time, so it
+        // only reaches once the hand moves away from its usual place in view (learnt while it rests there)
+        Vector3 inView = Quaternion.Inverse(p.HeadRotation) * (p.Hand - p.Head);
+        if (!plapperSeen) { plapperSeen = true; plapperRest = inView; }
+        float away = (inView - plapperRest).magnitude;
+        plapperRest = Vector3.Lerp(plapperRest, inView, Motion.Damp(away < .1f ? .8f : .05f, dt));
+        float wantReach = Mathf.Clamp01((away - .1f) / .12f);
+        plapperReach = Mathf.Lerp(plapperReach, wantReach, Motion.Damp(wantReach > plapperReach ? 10f : 3f, dt));
+        Vector3 hangL = armL.position + down * (arm * .92f) - right * (arm * .12f) + fwd * (arm * .1f) - fwd * (swing * gait * arm * .35f);
+        Vector3 leftTarget = Vector3.Lerp(hangL, p.Hand, plapperReach);
+        Motion.TwoBone(armL, foreL, handL, Reach(armL.position, leftTarget, arm), armL.position + (-fwd * .6f + down * .5f - right * .6f) * arm);
+        if (plapperReach < 1f)   // relaxed wrist while it hangs: palm toward the thigh
+            handL.rotation = Quaternion.AngleAxis(70f * (1f - plapperReach), foreL.position - armL.position) * handL.rotation;
+        // right: holds the tool out in front of the shoulder, toward where they aim (the tool is then put in this
+        // palm, so it can't float off the hand), otherwise hangs and swings with the walk
+        Vector3 rightTarget, holdDir = fwd;
+        if (holdingTool)
+        {
+            Vector3 aim = p.HeadRotation * Vector3.forward;
+            float chestYaw = bodyYaw + lookYaw * chestShare;
+            float yawOff = Mathf.Clamp(Mathf.DeltaAngle(chestYaw, Mathf.Atan2(aim.x, aim.z) * Mathf.Rad2Deg), -55f, 55f);
+            float aimPitch = Mathf.Clamp(Mathf.Asin(Mathf.Clamp(aim.y, -1f, 1f)) * Mathf.Rad2Deg, -60f, 35f);
+            holdDir = Quaternion.Euler(-aimPitch, chestYaw + yawOff, 0f) * Vector3.forward;
+            rightTarget = armR.position + holdDir * (arm * HoldReach(usingTool, gait)) + down * (arm * .3f) + toolReach;
+        }
         else
         {
             Vector3 hang = armR.position + down * (arm * .92f) + right * (arm * .12f) + fwd * (arm * .1f);
             rightTarget = hang + fwd * (swing * gait * arm * .35f);
         }
+        RightTarget = rightTarget; HoldingTool = holdingTool;
         Motion.TwoBone(armR, foreR, handR, Reach(armR.position, rightTarget, arm), armR.position + (-fwd * .6f + down * .5f + right * .6f) * arm);
-        if (!holdingTool)   // relaxed wrist: palm toward the thigh
-            handR.rotation = Quaternion.AngleAxis(-70f, foreR.position - armR.position) * handR.rotation;
+        if (holdingTool)
+        {
+            // a grip: fingers along the tool, palm facing in, thumb up - the fingers then curl round it
+            Vector3 back = Vector3.ProjectOnPlane(p.HeadRotation * Vector3.right, holdDir);
+            back = back.sqrMagnitude > 1e-4f ? back.normalized : right;
+            handR.rotation = Quaternion.LookRotation(holdDir, back) * Quaternion.Inverse(Quaternion.LookRotation(fingerRestR, Vector3.up)) *
+                             restRootRot[IndexOf(handR)];
+            ToolSide = back;
+            ToolAim = holdDir;
+        }
+        else handR.rotation = Quaternion.AngleAxis(-70f, foreR.position - armR.position) * handR.rotation;   // palm toward the thigh
         Curl(fingersL, handL, 15f + 10f * breath * .3f);
         Curl(fingersR, handR, holdingTool ? 72f : 22f);
+        ToolPalm = holdingTool && middleR != null ? handR.position + (middleR.position - handR.position) * .55f - ToolSide * (.012f * scale) : handR.position;
 
         // ---------------------------------------------------------------- tail: trails the turn, lifts when running
         Vector3 tailTarget = new(-8f + 10f * gait - crouch * 10f, Mathf.Clamp(-yawVelocity * .12f, -35f, 35f), 0f);
@@ -476,12 +555,25 @@ internal sealed class KoboldAvatar
         jaw.rotation = Quaternion.AngleAxis(gait * 6f + yip * 16f, head.right) * jaw.rotation;
     }
 
+    /// <summary>How far out a held tool is held, as a share of the arm: further while using it, closer while running.</summary>
+    private static float HoldReach(bool usingTool, float gait) => usingTool ? .8f : Mathf.Lerp(.62f, .5f, gait);
+
     /// <summary>A target the arm can reach with a little bend left in the elbow.</summary>
     private static Vector3 Reach(Vector3 shoulder, Vector3 target, float armLength)
     {
         Vector3 d = target - shoulder;
         float max = armLength * .93f;
         return d.magnitude > max ? shoulder + d.normalized * max : target;
+    }
+
+    /// <summary>Where a swinging foot should come down: under where the hip will be then, half a stance ahead of it.</summary>
+    private Vector3 Landing(FootStepper step, Vector3 home, float stance, Vector3 ground, Vector3 right, float side,
+                            float halfStance, Vector3 otherFoot, float legLen)
+    {
+        Vector3 land = home + velocity * ((1f - step.Progress) * step.Duration + stance * .5f);
+        land = KeepSide(land, ground, right, side, halfStance, otherFoot);
+        land.y = GroundY(land, ground.y, legLen);
+        return land;
     }
 
     /// <summary>Keep a foot target on its own side (side -1 left, +1 right) of the body line and of the other foot.</summary>
@@ -499,13 +591,16 @@ internal sealed class KoboldAvatar
     private static float Smooth01(float u) { u = Mathf.Clamp01(u); return u * u * (3f - 2f * u); }
 
     private void LegIK(Transform upper, Transform lower, Transform foot, Vector3 footPos, float footYaw, float progress,
-                       Vector3 fwd, Vector3 up, Quaternion lean)
+                       Vector3 fwd, Vector3 up)
     {
         int fi = IndexOf(foot);
         // the ankle sits above the sole by its rest height
         Vector3 ankle = footPos + up * (restRootPos[fi].y * scale);
         if (foot == footL) AnkleTargetL = ankle; else AnkleTargetR = ankle;
-        Motion.TwoBone(upper, lower, foot, ankle, upper.position + (fwd * 1.2f + Vector3.down * .2f) * data.LegLength * scale);
+        // the knee points between the body's front and the foot's, so a turned foot doesn't twist it
+        Vector3 kneeDir = fwd + Quaternion.Euler(0f, footYaw, 0f) * Vector3.forward;
+        if (kneeDir.sqrMagnitude < .1f) kneeDir = fwd;
+        Motion.TwoBone(upper, lower, foot, ankle, upper.position + (kneeDir.normalized * 1.2f + Vector3.down * .2f) * data.LegLength * scale);
         // flat on the ground, pointing the way it was planted; heel lifts first (toes down), toes rise before landing
         float pitch = progress < 1f ? Mathf.Sin(progress * Mathf.PI * 2f) * -12f : 0f;
         foot.rotation = Quaternion.Euler(0f, footYaw, 0f) * Quaternion.Euler(-pitch, 0f, 0f) * restRootRot[fi];

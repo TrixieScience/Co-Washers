@@ -9,7 +9,7 @@ using UnityEngine.SceneManagement;
 
 namespace DragNWashCoop;
 
-[BepInPlugin(Guid, "Co-Washers", "0.5.0")]
+[BepInPlugin(Guid, "Co-Washers", "0.5.1")]
 public sealed class CoopPlugin : BaseUnityPlugin
 {
     public const string Guid = "trixiescience.dragnwashcoop";

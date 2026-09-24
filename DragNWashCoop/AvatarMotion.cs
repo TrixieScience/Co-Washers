@@ -203,6 +203,17 @@ internal sealed class FootStepper
         return true;
     }
 
+    /// <summary>
+    /// Mid-swing, aim somewhere new and take a new time for the whole swing (players start, stop and turn faster than
+    /// a step): the foot carries on smoothly from where it is along its arc.
+    /// </summary>
+    internal void Retarget(Vector3 target, float duration)
+    {
+        if (!Swinging) return;
+        To = target;
+        Duration = Mathf.Clamp(duration, .1f, .6f);
+    }
+
     /// <summary>Advance; returns the foot position and how high it is lifted (0..1 of the arc).</summary>
     internal Vector3 Tick(float dt, float lift, out float arc)
     {

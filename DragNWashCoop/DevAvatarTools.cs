@@ -34,7 +34,8 @@ internal static class DevAvatarTools
 
     internal static void Parse(string[] args)
     {
-        Walk = Array.IndexOf(args, "-coop-dev-walk") >= 0;
+        Run = Array.IndexOf(args, "-coop-dev-run") >= 0;
+        Walk = Run || Array.IndexOf(args, "-coop-dev-walk") >= 0;
         YipCycle = Array.IndexOf(args, "-coop-dev-yip") >= 0;
         int i = Array.IndexOf(args, "-coop-avatar-shot");
         if (i >= 0 && i + 1 < args.Length) ShotDir = args[i + 1];
@@ -87,16 +88,20 @@ internal static class DevAvatarTools
                                   ref Vector3 tool, ref Quaternion toolRot, ref FeetPose feet)
     {
         if (!Walk || !feet.Has) return;
-        if (walkStart < 0f) { walkStart = Time.unscaledTime; walkAnchor = feet.Position; anchorYaw = headRot.eulerAngles.y; }
+        if (walkStart < 0f) { walkStart = Time.unscaledTime; walkAnchor = runPos = feet.Position; anchorYaw = runYaw = headRot.eulerAngles.y; runLast = Time.unscaledTime; }
         float total = Time.unscaledTime - walkStart;
         float t = total % 13f;
         int laps = Mathf.FloorToInt(total / 13f);
         const float radius = 2.2f, speed = 1.3f;
         float yaw, lookYaw = 0f, lookPitch = 0f;
         Vector3 ground;
-        float walked = (laps * 8f + Mathf.Min(t, 8f)) * speed / radius;  // radians along the circle, continuing
-        ground = walkAnchor + new Vector3(Mathf.Sin(walked) * radius, 0f, radius - Mathf.Cos(walked) * radius);
-        yaw = walked * Mathf.Rad2Deg;                                    // tangent: starts heading +Z, turns right
+        if (Run) PlayerLikeRun(t, out ground, out yaw);
+        else
+        {
+            float walked = (laps * 8f + Mathf.Min(t, 8f)) * speed / radius;  // radians along the circle, continuing
+            ground = walkAnchor + new Vector3(Mathf.Sin(walked) * radius, 0f, radius - Mathf.Cos(walked) * radius);
+            yaw = walked * Mathf.Rad2Deg;                                    // tangent: starts heading +Z, turns right
+        }
         if (t > 8f)
         {
             float s = t - 8f;                                            // standing: look left, right, up, back
@@ -104,6 +109,7 @@ internal static class DevAvatarTools
             lookYaw = Mathf.Sin(s * 1.3f) * 70f * fade;
             lookPitch = -(Mathf.Sin(s * 2.1f) * .5f + .5f) * 30f * fade;
         }
+        if (Run && t > 8f) lookYaw *= .5f;   // the run already turns a lot; keep its look-around smaller
         var oldGround = feet.Position;
         var turn = Quaternion.Euler(0f, yaw + lookYaw - headRot.eulerAngles.y, 0f);
         var bodyTurn = Quaternion.Euler(0f, yaw - feet.Rotation.eulerAngles.y, 0f);
@@ -116,6 +122,39 @@ internal static class DevAvatarTools
         toolRot = turn * toolRot;
         feet.Position = ground;
         feet.Rotation = bodyTurn * feet.Rotation;
+    }
+
+    // -coop-dev-run: the moves of a real player, at the game's walking speed (5 m/s, 35 m/s² acceleration)
+    internal static bool Run;
+    private static Vector3 runPos, runVel;
+    private static float runYaw, runLast;
+
+    /// <summary>
+    /// The first 8 s of a -coop-dev-run cycle, in camera space: run, stop dead, flick the mouse round, strafe right,
+    /// backpedal, strafe left, run while turning, stop, flick back. A weak pull toward the start keeps it from drifting.
+    /// </summary>
+    private static void PlayerLikeRun(float t, out Vector3 ground, out float yaw)
+    {
+        float dt = Mathf.Clamp(Time.unscaledTime - runLast, 0f, .1f);
+        runLast = Time.unscaledTime;
+        Vector3 move = Vector3.zero;   // (right, 0, forward) in camera space, m/s
+        float yawRate = 0f;            // degrees per second
+        if (t < 1f) { move = new(0f, 0f, 5f); yawRate = 30f; }
+        else if (t < 1.5f) { }
+        else if (t < 2.1f) { if (t is > 1.6f and < 1.9f) yawRate = -370f; }      // a quick flick left
+        else if (t < 3.1f) move = new(5f, 0f, 0f);
+        else if (t < 3.4f) { }
+        else if (t < 4.4f) move = new(0f, 0f, -5f);
+        else if (t < 5.4f) move = new(-5f, 0f, 0f);
+        else if (t < 6.6f) { move = new(0f, 0f, 5f); yawRate = -60f; }
+        else if (t < 7f) { }
+        else if (t < 7.6f) yawRate = 180f;
+        if (t < 8f) runYaw += yawRate * dt;
+        Vector3 want = Quaternion.Euler(0f, runYaw, 0f) * move + (walkAnchor - runPos) * .3f;
+        runVel = Vector3.MoveTowards(runVel, want, 35f * dt);
+        runPos += runVel * dt;
+        ground = runPos;
+        yaw = runYaw;
     }
 
     /// <summary>
@@ -132,7 +171,8 @@ internal static class DevAvatarTools
         {
             trace = new StreamWriter(TracePath);
             traceStart = Time.unscaledTime;
-            trace.WriteLine("t,dt,rx,ry,rz,hx,hy,hz,px,py,pz,lx,ly,lz,flx,fly,flz,frx,fry,frz,swl,swr,yaw,margin,tlx,tly,tlz,trx,try,trz");
+            trace.WriteLine("t,dt,rx,ry,rz,hx,hy,hz,px,py,pz,lx,ly,lz,flx,fly,flz,frx,fry,frz,swl,swr,yaw,margin,tlx,tly,tlz,trx,try,trz," +
+                            "klx,kly,klz,krx,kry,krz,hrx,hry,hrz,gx,gy,gz,fyl,fyr,gait,tool");
         }
         float t = Time.unscaledTime - traceStart;
         if (t > 30f) { trace.Close(); TracePath = string.Empty; trace = null; return; }
@@ -142,7 +182,9 @@ internal static class DevAvatarTools
                         V(a.Root.transform.position) + "," + V(a.Head.position) + "," + V(a.Hips.position) + "," +
                         V(a.HandL.position) + "," + V(a.FootL.position) + "," + V(a.FootR.position) + "," +
                         (a.SwingingL ? 1 : 0) + "," + (a.SwingingR ? 1 : 0) + "," +
-                        string.Format(inv, "{0:F3},{1:F4},", a.BodyYaw, buf.LastMargin) + V(a.AnkleTargetL) + "," + V(a.AnkleTargetR));
+                        string.Format(inv, "{0:F3},{1:F4},", a.BodyYaw, buf.LastMargin) + V(a.AnkleTargetL) + "," + V(a.AnkleTargetR) + "," +
+                        V(a.KneeL.position) + "," + V(a.KneeR.position) + "," + V(a.HandR.position) + "," + V(a.RightTarget) + "," +
+                        string.Format(inv, "{0:F2},{1:F2},{2:F3},{3}", a.FootYawL, a.FootYawR, a.Gait, a.HoldingTool ? 1 : 0));
     }
 
     private static float firstSeen = -1f;

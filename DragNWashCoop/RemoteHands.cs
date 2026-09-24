@@ -135,6 +135,8 @@ internal sealed class RemoteHands
         internal GameObject Tool = null!;
         internal Transform[] ToolParts = Array.Empty<Transform>();
         internal Vector3[] ToolRest = Array.Empty<Vector3>();   // each part's local position as the prefab has it
+        internal bool ToolShaped;                               // its shape is known, so the kobold can hold it
+        internal Vector3 ToolCenter, ToolExtents;               // the tool's box, in its own space, as the prefab has it
         internal ToolPose ToolPose = ToolPose.Empty;
         internal Vector3 GoalPosition;
         internal Quaternion GoalRotation;
@@ -216,6 +218,7 @@ internal sealed class RemoteHands
             actor.Tool = CreateToolVisual(actor.Root.transform, tool, out actor.Spray);
             actor.ToolParts = actor.Tool.GetComponentsInChildren<Transform>(true);
             actor.ToolRest = actor.ToolParts.Select(t => t.localPosition).ToArray();
+            actor.ToolShaped = ToolShape(actor.Tool, out actor.ToolCenter, out actor.ToolExtents);
             // the kobold holds the tool itself; the old hands-only look names it under the player
             actor.Tag.text = owner.Session.NameOf(id) + (actor.Avatar == null && actor.Tool.activeSelf ? $"\n<size=70%>{tool}" : "");
         }
@@ -345,8 +348,9 @@ internal sealed class RemoteHands
                         actor.Avatar.SetColour(SlotOf(actor.Id));
                         actor.Tag.color = PlayerLooks.Lettering(actor.Avatar.Slot);
                     }
-                    if (actor.Tool.activeSelf) p.Tool = Grip(actor);
-                    actor.Avatar.Drive(p, Time.unscaledDeltaTime, actor.Tool.activeSelf, actor.Using);
+                    Vector3 reach = actor.Tool.activeSelf ? ToolReach(actor) : Vector3.zero;
+                    actor.Avatar.Drive(p, Time.unscaledDeltaTime, actor.Tool.activeSelf, actor.Using, reach);
+                    if (actor.Tool.activeSelf) PutInHand(actor, reach);
                     float volume = Mathf.Lerp(.45f, 1f, actor.Avatar.Gait);   // shuffling in place is quieter
                     if (actor.Avatar.LandedL) PlayerLooks.Footstep(actor.Avatar.FootL.position, volume);
                     if (actor.Avatar.LandedR) PlayerLooks.Footstep(actor.Avatar.FootR.position, volume);
@@ -368,10 +372,10 @@ internal sealed class RemoteHands
     }
 
     /// <summary>
-    /// Where the kobold's hand should be on its tool: the tool's handle, carried along by the part that has moved
-    /// furthest from where the prefab has it (the sponge reaching out to the surface being scrubbed).
+    /// How far their tool's part that has moved furthest from where the prefab has it is out (the sponge reaching to
+    /// the surface being scrubbed): the kobold's hand reaches that much further, carrying that part.
     /// </summary>
-    private static Vector3 Grip(Actor actor)
+    private static Vector3 ToolReach(Actor actor)
     {
         var parts = actor.ToolParts;
         Vector3 best = Vector3.zero;
@@ -382,7 +386,51 @@ internal sealed class RemoteHands
             Vector3 moved = parent.TransformVector(parts[i].localPosition - actor.ToolRest[i]);
             if (moved.sqrMagnitude > best.sqrMagnitude) best = moved;
         }
-        return actor.Tool.transform.position + (best.sqrMagnitude > .05f * .05f ? best : Vector3.zero);
+        return best.sqrMagnitude > .05f * .05f ? best : Vector3.zero;
+    }
+
+    /// <summary>
+    /// Put the tool in the kobold's right hand, pointing the way they point theirs: its side against the palm, where
+    /// the fingers close round it (with the part that reaches out, e.g. the sponge, kept in the hand).
+    /// </summary>
+    private static void PutInHand(Actor actor, Vector3 reach)
+    {
+        if (actor.Avatar == null || !actor.ToolShaped) return;
+        var t = actor.Tool.transform;
+        Vector3 side = actor.Avatar.ToolSide, aim = actor.Avatar.ToolAim, e = actor.ToolExtents;
+        float Half(Vector3 dir) => Mathf.Abs(Vector3.Dot(dir, t.TransformVector(new Vector3(e.x, 0f, 0f)))) +
+                                   Mathf.Abs(Vector3.Dot(dir, t.TransformVector(new Vector3(0f, e.y, 0f)))) +
+                                   Mathf.Abs(Vector3.Dot(dir, t.TransformVector(new Vector3(0f, 0f, e.z))));
+        // its side against the palm, and held toward its back end: the handle, the end nearest you in first person
+        t.position = actor.Avatar.ToolPalm - side * (Half(side) * .85f) + aim * (Half(aim) * .45f) - t.TransformVector(actor.ToolCenter) - reach;
+    }
+
+    /// <summary>The box round a tool's meshes, in the tool's own space, as the prefab has them (not its effects).</summary>
+    private static bool ToolShape(GameObject tool, out Vector3 center, out Vector3 extents)
+    {
+        var root = tool.transform;
+        var box = new Bounds();
+        bool any = false;
+        foreach (var r in tool.GetComponentsInChildren<Renderer>(true))
+        {
+            Bounds local;
+            Transform space;
+            if (r is SkinnedMeshRenderer skinned && skinned.sharedMesh != null)
+            { local = skinned.localBounds; space = skinned.rootBone != null ? skinned.rootBone : skinned.transform; }
+            else if (r is MeshRenderer && r.TryGetComponent<MeshFilter>(out var filter) && filter.sharedMesh != null)
+            { local = filter.sharedMesh.bounds; space = r.transform; }
+            else continue;
+            for (int i = 0; i < 8; i++)
+            {
+                var corner = local.center + Vector3.Scale(local.extents, new Vector3((i & 1) == 0 ? -1f : 1f, (i & 2) == 0 ? -1f : 1f, (i & 4) == 0 ? -1f : 1f));
+                var point = root.InverseTransformPoint(space.TransformPoint(corner));
+                if (!any) { box = new Bounds(point, Vector3.zero); any = true; }
+                else box.Encapsulate(point);
+            }
+        }
+        center = box.center;
+        extents = box.extents;
+        return any && extents.sqrMagnitude > 1e-6f;
     }
 
     /// <summary>Turn every name and "Yip!" toward this camera (developer photos, taken from their own camera).</summary>

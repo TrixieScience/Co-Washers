@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1
+
+- **Friends' legs keep up with them.** Players move at up to 5 m/s and start and stop almost instantly, and the
+  kobold's steps were made for a slow walk, so at full speed its legs stretched into splits and lunges. Now the stride
+  and step rate follow the speed, a running kobold has a moment with both feet off the ground, and a foot in the air
+  keeps aiming for where it should land as they speed up, stop or turn.
+- **It runs the way it's going.** Moving quickly, the kobold faces where it's heading (or backs up, walking
+  backwards), like the game's own feet, while its head keeps looking where that player looks. Strafing is a run
+  instead of a sidestep. Knees follow the feet, so a turned foot doesn't twist a knee.
+- **Tools are held in the hand.** The tool used to float where the other player's first-person view had it, with the
+  hand grabbing at its side. Now the kobold holds it at the waist by its handle end, pointing where they aim, with its
+  fingers wrapped around it. The sponge still reaches out to whatever they're scrubbing.
+- **The left arm hangs naturally.** It used to be held up all the time. Now it only reaches when that player's hand
+  actually moves.
+- Everyone in a session needs 0.5.1: the mod won't connect copies that don't match.
+
 ## 0.5.0
 
 - The mod is now called **Co-Washers** (name by Cinderace).

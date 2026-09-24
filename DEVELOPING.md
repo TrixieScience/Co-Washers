@@ -72,6 +72,8 @@ Steam path.
   that slot.
 - More developer options, for checking the other players' kobold:
   - `-coop-dev-walk`: the pose this copy sends walks in a circle and looks around.
+  - `-coop-dev-run`: like `-coop-dev-walk`, but moving the way a real player does, at the game's 5 m/s: running,
+    stopping dead, flicking the camera round, strafing both ways and backing up.
   - `-coop-dev-tool <name>`: this copy holds that tool (e.g. `Sprayer` or `Sponge`) and uses it while the walk
     stands still.
   - `-coop-dev-yip`: yips once per walk cycle.
